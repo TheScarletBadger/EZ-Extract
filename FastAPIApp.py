@@ -12,15 +12,21 @@ import uuid
 import os
 import pdfplumber
 import json
+from openai import OpenAI   
 
 app = FastAPI()
 
-mdl = "ollama/hf.co/unsloth/Qwen3-4B-Thinking-2507-GGUF:Q8_0"
+#25/04/26 switched from ollama to lmstudio for local LLM hosting
+hosturl = "http://localhost:1234/v1"
+mdl = "qwen-4b-saiga"
+lm_studio_openai = OpenAI(
+    base_url=hosturl,
+    api_key="xxxxxx"
+)
+client = instructor.from_openai(lm_studio_openai, mode=instructor.Mode.JSON_SCHEMA)
 
-#LLM client
-client = instructor.from_provider(mdl, mode=instructor.Mode.JSON)
-
-sysprompt = """Extract the report. Return a JSON object matching this exact schema:
+#24/04/26 added system prompt, significantly improved response model adgerence when testing with Qwen3:4b
+sysprompt = """Extract all data from the following document. Return a JSON object matching this exact schema:
 - title: string
 - date: string
 - Tables: list of objects, each with:
@@ -31,6 +37,7 @@ sysprompt = """Extract the report. Return a JSON object matching this exact sche
   - rows: list of lists of strings (each inner list is one row)
 """
 
+#Define response model
 class Table(BaseModel):
     page_number: int | None = Field(description='Page number where table came from, null if no table')
     table_number: int | None = Field(description='Number of table on page, null if no table')
@@ -38,12 +45,18 @@ class Table(BaseModel):
     columns: list[str] | None 
     rows: list[list[str | None]] 
 
-class Report(BaseModel):
+class Document(BaseModel):
     title: str = Field(description='Title of document found at the beginning of page 1')
     date: str | None = Field(description='Documents date of publication if present null if not')
     Tables: list[Table]  = Field(description='List of tables extracted from document, empty list [] if document contained no tables')
 
+
 def pdfextract(file):
+    '''
+    Accepts file name with path as input, extracts text and tables with pdfplumber
+    then processes with LLM using instructor library to constrain LLM responses to 
+    structure defined in response model. Returns JSON.
+    '''
     outdict = {}
     with pdfplumber.open(file) as pdf:
         for pageidx, page in enumerate(pdf.pages, start=1):
@@ -53,7 +66,8 @@ def pdfextract(file):
     json_string = json.dumps(outdict, indent=2)
     # Extract it from natural language
     llmoutput = client.chat.completions.create(
-        response_model=Report,
+        model=mdl,
+        response_model=Document,
         messages=[
             {"role": "system", "content": sysprompt},
             {"role": "user", "content": json_string}])
