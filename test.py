@@ -5,40 +5,51 @@ Created on Wed Apr 22 22:21:14 2026
 @author: Barry
 """
 
-from flask import Flask, render_template, request, redirect
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import instructor
-import uuid
-import os
 import pdfplumber
 import json
-import jsonify
-app = Flask(__name__)
 
 #LLM client
-client = instructor.from_provider("ollama/qwen3:4b")
+client = instructor.from_provider("ollama/qwen3:4b", mode=instructor.Mode.JSON)
+                                  
+sysprompt = """Extract the report. Return a JSON object matching this exact schema:
+- title: string
+- date: string or null
+- Tables: list of objects, each with:
+  - table_name: string
+  - columns: list of plain strings (column names only, e.g. ["Category", "Answer"])
+  - rows: list of lists of strings (each inner list is one row)
+"""
+
+class Table(BaseModel):
+    table_name: str | None 
+    columns: list[str] | None 
+    rows: list[list[str | None]] 
 
 # Define response model
-class report(BaseModel):
-    title: str
-    date: str
-    wind: str
+class Report(BaseModel):
+    title: str = Field(description='Title of document found at the beginning of page 1')
+    date: str | None = Field(description='Documents date of publication if present null if not')
+    Tables: list[Table]  = Field(description='list of tables extracted from document, empty list [] if document contained no tables')
 
 outdict = {}
-
-with pdfplumber.open("uploads/eh-mwi-wm14455_2026-04-18_160011_4353.pdf") as pdf:
-    for idx, page in enumerate(pdf.pages, start=1):
-        outdict[f'Page {idx} text'] = page.extract_text()
-        outdict[f'Table {idx}'] = page.extract_tables()
-
+with pdfplumber.open("uploads/testdoc.pdf") as pdf:
+    for pageidx, page in enumerate(pdf.pages, start=1):
+        outdict[f'Page {pageidx} text'] = page.extract_text()
+        for tableidx, table in enumerate(page.extract_tables(), start=1):
+            outdict[f'Page {pageidx} - Table {tableidx}'] = table
 
 
 json_string = json.dumps(outdict, indent=2)
 
 # Extract it from natural language
 llmoutput = client.chat.completions.create(
-    response_model=report,
-    messages=[{"role": "user", "content": json_string}],
+    response_model=Report,
+    messages=[
+        {"role": "system", "content": sysprompt},
+        {"role": "user", "content": json_string}
+    ],
 )
 
 print(llmoutput.model_dump())

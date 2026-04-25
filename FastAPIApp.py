@@ -1,4 +1,11 @@
-from flask import Flask, render_template, request, redirect
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Apr 25 11:01:07 2026
+
+@author: Barry
+"""
+
+from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel, Field
 import instructor
 import uuid
@@ -6,15 +13,17 @@ import os
 import pdfplumber
 import json
 
-app = Flask(__name__)
+app = FastAPI()
 
 #LLM client
 client = instructor.from_provider("ollama/qwen3:4b", mode=instructor.Mode.JSON)
 
 sysprompt = """Extract the report. Return a JSON object matching this exact schema:
 - title: string
-- date: string or null
+- date: string
 - Tables: list of objects, each with:
+  - page_number: int
+  - table_number: int
   - table_name: string
   - columns: list of plain strings (column names only, e.g. ["Category", "Answer"])
   - rows: list of lists of strings (each inner list is one row)
@@ -23,14 +32,14 @@ sysprompt = """Extract the report. Return a JSON object matching this exact sche
 class Table(BaseModel):
     page_number: int | None = Field(description='Page number where table came from, null if no table')
     table_number: int | None = Field(description='Number of table on page, null if no table')
-    table_name: str | None 
+    table_name: str | None = Field(description='Name / title of table, null if no table')
     columns: list[str] | None 
     rows: list[list[str | None]] 
 
 class Report(BaseModel):
     title: str = Field(description='Title of document found at the beginning of page 1')
     date: str | None = Field(description='Documents date of publication if present null if not')
-    Tables: list[Table]  = Field(description='list of tables extracted from document, empty list [] if document contained no tables')
+    Tables: list[Table]  = Field(description='List of tables extracted from document, empty list [] if document contained no tables')
 
 def pdfextract(file):
     outdict = {}
@@ -48,47 +57,17 @@ def pdfextract(file):
             {"role": "user", "content": json_string}])
     return(llmoutput.model_dump())
 
-
-@app.route('/')  
-def main():  
-    return ('test')
-
-@app.route('/ui/upload')  
-def upload():  
-    return render_template("upload.html") 
-
-@app.route('/ui/fileparse', methods = ['POST'])  
-def parsefile():    
-    f = request.files['file']
-    fname, ext = os.path.splitext(f.filename)
-    if ext !='.pdf':
-        return redirect('/upload')
+@app.post("/upload")
+async def upload(file: UploadFile = File(...)):
+    fname, ext = os.path.splitext(file.filename)
+    if ext != '.pdf':
+        return {'Error':'Uploaded file was not .pdf'}
     else:
         newname = str(uuid.uuid4())
-        f.save('uploads/' + newname + '.pdf') 
-        return render_template("parsing.html", name = f.filename)
-
-
-@app.route('/api/upload', methods = ['POST'])  
-def apiupload():  
-    f = request.files['file']
-    fname, ext = os.path.splitext(f.filename)
-    if ext !='.pdf':
-        return redirect('/upload')
-    else:
-        newname = str(uuid.uuid4())
-        f.save('uploads/' + newname + '.pdf')
-        jstr = pdfextract('uploads/' + newname + '.pdf')
+        filepath = f'uploads/{newname}.pdf'
         
-        
-        
+        with open(filepath, 'wb') as f:
+            f.write(await file.read())
+        jstr = pdfextract(filepath)
+        os.remove(filepath)
         return(jstr)
-
-
-
-
-        
-
-
-if __name__ == '__main__':
-    app.run(debug=True, use_reloader=False)
