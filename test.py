@@ -10,8 +10,10 @@ import instructor
 import pdfplumber
 import json
 
+mdl = "ollama/hf.co/unsloth/Qwen3-4B-Thinking-2507-GGUF:Q8_0"
+
 #LLM client
-client = instructor.from_provider("ollama/qwen3:4b", mode=instructor.Mode.JSON)
+client = instructor.from_provider(mdl, mode=instructor.Mode.JSON)
                                   
 sysprompt = """Extract the report. Return a JSON object matching this exact schema:
 - title: string
