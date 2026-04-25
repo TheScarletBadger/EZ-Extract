@@ -5,14 +5,18 @@ Created on Sat Apr 25 11:01:07 2026
 @author: Barry
 """
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel, Field
 import instructor
 import uuid
 import os
 import pdfplumber
 import json
-from openai import OpenAI   
+from openai import OpenAI
+
+#create tempfile directory if missing
+if not os.path.exists("uploads"):
+    os.makedirs("uploads") 
 
 app = FastAPI()
 
@@ -77,13 +81,16 @@ def pdfextract(file):
 async def upload(file: UploadFile = File(...)):
     fname, ext = os.path.splitext(file.filename)
     if ext != '.pdf':
-        return {'Error':'Uploaded file was not .pdf'}
+        raise HTTPException(status_code=415, detail="Uploaded file was not .pdf")
     else:
         newname = str(uuid.uuid4())
         filepath = f'uploads/{newname}.pdf'
-        
         with open(filepath, 'wb') as f:
             f.write(await file.read())
-        jstr = pdfextract(filepath)
-        os.remove(filepath)
+        try:
+            jstr = pdfextract(filepath)
+        except:
+            raise HTTPException(status_code=500, detail="Error occured when parsing .PDF")
+        finally:
+            os.remove(filepath)
         return(jstr)
