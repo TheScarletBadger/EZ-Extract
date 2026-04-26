@@ -1,8 +1,6 @@
 fastapi
 pydantic
 instructor
-uuid
-os
 pdfplumber
 json
 openai
