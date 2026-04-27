@@ -14,11 +14,12 @@ import pdfplumber
 import json
 from openai import OpenAI
 import sqlite3
+import threading
 
-#26/04/2026 introducing sqlite db to allow scheduling jobs
+#27/04/26 added semaphore to prevent overloading llm backend
+llm_semaphore = threading.Semaphore(1)
 
-os.remove("EZ-Extract.db")
-#Create sqlite db and jobs table
+#create sqlite db and jobs table if they do not already exist
 try:
     with sqlite3.connect("EZ-Extract.db") as conn:
         cursor = conn.cursor()
@@ -36,11 +37,11 @@ except sqlite3.OperationalError as e:
 finally:    
     conn.close()
 
-
-#create tempfile directory if missing
+#create temporary file directory if it does not already exist
 if not os.path.exists("uploads"):
     os.makedirs("uploads") 
 
+#initialize app
 app = FastAPI()
 
 #25/04/26 switched from ollama to lmstudio for local LLM hosting
@@ -77,7 +78,6 @@ class Document(BaseModel):
     date: str | None = Field(description='Documents date of publication if present null if not')
     Tables: list[Table]  = Field(description='List of tables extracted from document, empty list [] if document contained no tables')
 
-
 def pdfextract(file):
     '''
     Accepts file name with path as input, extracts text and tables with pdfplumber
@@ -100,20 +100,11 @@ def pdfextract(file):
             {"role": "user", "content": json_string}])
     return(llmoutput.model_dump())
 
-def plumbpdf(file):
-    '''
-    Extracts text and tables with pdfplumber. Returns JSON.
-    '''
-    outdict = {}
-    with pdfplumber.open(file) as pdf:
-        for pageidx, page in enumerate(pdf.pages, start=1):
-            outdict[f'Page {pageidx} text'] = page.extract_text()
-            for tableidx, table in enumerate(page.extract_tables(), start=1):
-                outdict[f'Page {pageidx} - Table {tableidx}'] = table
-    return(json.dumps(outdict, indent=2))
-
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
+    '''
+    Immediately processes submitted jobs (not reccomended)
+    '''
     fname, ext = os.path.splitext(file.filename)
     if ext != '.pdf':
         raise HTTPException(status_code=415, detail="Uploaded file was not .pdf")
@@ -132,6 +123,9 @@ async def upload(file: UploadFile = File(...)):
 
 @app.post("/submitjob")
 async def submit(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+    '''
+    Add job to queue. Returns job id
+    '''
     fname, ext = os.path.splitext(file.filename)
     if ext != '.pdf':
         raise HTTPException(status_code=415, detail="Uploaded file was not .pdf")
@@ -150,21 +144,45 @@ async def submit(file: UploadFile = File(...), background_tasks: BackgroundTasks
                 conn.commit()
                 background_tasks.add_task(processjobs,newname)
                 return({"Job UUID": newname})
-        except:
+        except sqlite3.OperationalError as e:
+            print(e)
             raise HTTPException(status_code=500, detail="Error writing to database")
-            
-def processjobs(jobid):           
-    print(jobid)
+
+@app.get("/retrievejob/{jobid}")
+def retrievejobs(jobid):
+    '''
+    Get results of previous job using job id
+    '''    
+    print(f"Fetching results of job {jobid}")
     try:
-        jstr = pdfextract(f"uploads/{jobid}.pdf")
         with sqlite3.connect("EZ-Extract.db") as conn:
             cur = conn.cursor()
-            cur.execute(
-                        "UPDATE JOBS SET JSON_OUT = ?, STATUS = ? WHERE UUID = ?",
-                        (json.dumps(jstr), "Complete", jobid)
-                    )
-            conn.commit()
-            os.remove(f"uploads/{jobid}.pdf")
-
+            cur.execute(f"SELECT JSON_OUT FROM JOBS WHERE UUID = '{jobid}'")
+            raw = cur.fetchone()[0]
+            escaped = raw.replace('\\"', '"')
+            return(json.loads(escaped))
     except sqlite3.OperationalError as e:
         print(e)
+        raise HTTPException(status_code=500, detail="Error retrieving data from database")
+
+def processjobs(jobid):
+    '''
+    Processes requests as a background task, sending them one at a time to llm and
+    writing results into the sqlite database
+    '''     
+    with llm_semaphore:
+        print(f"Processing job {jobid}")
+        try:
+            jstr = pdfextract(f"uploads/{jobid}.pdf")
+            with sqlite3.connect("EZ-Extract.db") as conn:
+                cur = conn.cursor()
+                cur.execute(
+                            "UPDATE JOBS SET JSON_OUT = ?, STATUS = ? WHERE UUID = ?",
+                            (json.dumps(jstr), "Complete", jobid)
+                        )
+                conn.commit()
+                os.remove(f"uploads/{jobid}.pdf")
+            print('Completed job {jobid}')
+        except sqlite3.OperationalError as e:
+            print(e)
+
