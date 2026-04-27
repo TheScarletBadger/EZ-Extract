@@ -103,7 +103,7 @@ def pdfextract(file):
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
     '''
-    Immediately processes submitted jobs (not reccomended)
+    Immediately processes submitted jobs (not recommended)
     '''
     fname, ext = os.path.splitext(file.filename)
     if ext != '.pdf':
